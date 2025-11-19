@@ -35,6 +35,9 @@
 
 #if U_SHOW_CPLUSPLUS_API
 
+#include <cstdint>
+#include <string_view>
+
 #include "unicode/bytestream.h"
 #include "unicode/localpointer.h"
 #include "unicode/strenum.h"
@@ -468,7 +471,7 @@ public:
      * @return      An alias to the code
      * @stable ICU 2.0
      */
-    U_COMMON_API inline const char* getLanguage() const;
+    U_COMMON_API const char* getLanguage() const;
 
     /**
      * Returns the locale's ISO-15924 abbreviation script code.
@@ -477,21 +480,21 @@ public:
      * @see uscript_getCode
      * @stable ICU 2.8
      */
-    U_COMMON_API inline const char* getScript() const;
+    U_COMMON_API const char* getScript() const;
 
     /**
      * Returns the locale's ISO-3166 country code.
      * @return      An alias to the code
      * @stable ICU 2.0
      */
-    U_COMMON_API inline const char* getCountry() const;
+    U_COMMON_API const char* getCountry() const;
 
     /**
      * Returns the locale's variant code.
      * @return      An alias to the code
      * @stable ICU 2.0
      */
-    U_COMMON_API inline const char* getVariant() const;
+    U_COMMON_API const char* getVariant() const;
 
     /**
      * Returns the programmatic name of the entire locale, with the language,
@@ -501,7 +504,7 @@ public:
      * @return      A pointer to "name".
      * @stable ICU 2.0
      */
-    U_COMMON_API inline const char* getName() const;
+    U_COMMON_API const char* getName() const;
 
     /**
      * Returns the programmatic name of the entire locale as getName() would return,
@@ -1148,7 +1151,6 @@ private:
      * @param canonicalize whether to call uloc_canonicalize on cLocaleID
      */
     Locale& init(const char* localeID, UBool canonicalize);
-    /** @internal */
     Locale& init(StringPiece localeID, UBool canonicalize);
 
     /*
@@ -1156,8 +1158,10 @@ private:
      *   NO side effects.   (Default constructor tries to get
      *   the default locale.)
      */
-    enum ELocaleType {
-        eBOGUS
+    enum ELocaleType : uint8_t {
+        eBOGUS,
+        eNEST,
+        eHEAP,
     };
     Locale(ELocaleType);
 
@@ -1166,28 +1170,153 @@ private:
      */
     static Locale* getLocaleCache();
 
-    char language[ULOC_LANG_CAPACITY];
-    char script[ULOC_SCRIPT_CAPACITY];
-    char country[ULOC_COUNTRY_CAPACITY];
-    int32_t variantBegin;
-    char* fullName;
-    char fullNameBuffer[ULOC_FULLNAME_CAPACITY];
-    // name without keywords
-    char* baseName;
-    void initBaseName(UErrorCode& status);
+    union Payload;
+    struct Nest;
+    struct Heap;
 
-    UBool fIsBogus;
+    /**
+     * Locale data that can be nested directly within the union Payload object.
+     */
+    struct Nest {
+        static constexpr size_t SIZE = 32;
+
+        ELocaleType type = eNEST;
+        char language[4];
+        char script[5];
+        char region[4];
+        uint8_t variantBegin;
+        char baseName[SIZE -
+                      sizeof type -
+                      sizeof language -
+                      sizeof script -
+                      sizeof region -
+                      sizeof variantBegin];
+
+        const char* getLanguage() const { return language; }
+        const char* getScript() const { return script; }
+        const char* getRegion() const { return region; }
+        const char* getVariant() const { return variantBegin == 0 ? "" : getBaseName() + variantBegin; }
+        const char* getBaseName() const { return baseName; }
+
+        // Doesn't inherit from UMemory, shouldn't be heap allocated.
+        static void* U_EXPORT2 operator new(size_t) noexcept = delete;
+        static void* U_EXPORT2 operator new[](size_t) noexcept = delete;
+
+        Nest() : language{'\0'}, script{'\0'}, region{'\0'}, variantBegin{0}, baseName{'\0'} {}
+
+        void init(std::string_view language,
+                  std::string_view script,
+                  std::string_view region,
+                  uint8_t variantBegin);
+
+        static bool fits(int32_t length,
+                         std::string_view language,
+                         std::string_view script,
+                         std::string_view region) {
+            return length < static_cast<int32_t>(sizeof Nest::baseName) &&
+                   language.size() < sizeof Nest::language &&
+                   script.size() < sizeof Nest::script &&
+                   region.size() < sizeof Nest::region;
+        }
+
+      private:
+        friend union Payload;
+        Nest(Heap&& heap, uint8_t variantBegin);
+    };
+    static_assert(sizeof(Nest) == Nest::SIZE);
+
+    /**
+     * Locale data that needs to be heap allocated in the union Payload object.
+     */
+    struct Heap {
+        struct Alloc;
+
+        ELocaleType type;
+        char language[ULOC_LANG_CAPACITY];
+        char script[ULOC_SCRIPT_CAPACITY];
+        char region[ULOC_COUNTRY_CAPACITY];
+        Alloc* ptr;
+
+        const char* getLanguage() const { return language; }
+        const char* getScript() const { return script; }
+        const char* getRegion() const { return region; }
+        const char* getVariant() const;
+        const char* getFullName() const;
+        const char* getBaseName() const;
+
+        // Doesn't inherit from UMemory, shouldn't be heap allocated.
+        static void* U_EXPORT2 operator new(size_t) noexcept = delete;
+        static void* U_EXPORT2 operator new[](size_t) noexcept = delete;
+
+        Heap(std::string_view language,
+             std::string_view script,
+             std::string_view region,
+             int32_t variantBegin);
+        ~Heap();
+
+        Heap& operator=(const Heap& other);
+        Heap& operator=(Heap&& other) noexcept;
+    };
+    static_assert(sizeof(Heap) <= sizeof(Nest));
+
+    /**
+     * This is kind of std::variant but customized to not waste any space on the
+     * discriminator or on any padding, and to copy any heap allocated object.
+     */
+    union Payload {
+      private:
+        Nest nest;
+        Heap heap;
+        ELocaleType type;
+
+        void copy(const Payload& other);
+        void move(Payload&& other) noexcept;
+
+      public:
+        // Doesn't inherit from UMemory, shouldn't be heap allocated.
+        static void* U_EXPORT2 operator new(size_t) noexcept = delete;
+        static void* U_EXPORT2 operator new[](size_t) noexcept = delete;
+
+        Payload() : type{eBOGUS} {}
+        ~Payload();
+
+        Payload(const Payload& other);
+        Payload(Payload&& other) noexcept;
+
+        Payload& operator=(const Payload& other);
+        Payload& operator=(Payload&& other) noexcept;
+
+        void setToBogus();
+        bool isBogus() const { return type == eBOGUS; }
+
+        template <typename T, typename... Args> T& emplace(Args&&... args);
+
+        template <typename T> T* get();
+
+        template <typename BogusFn, typename NestFn, typename HeapFn, typename... Args>
+        auto visit(BogusFn bogusFn, NestFn nestFn, HeapFn heapFn, Args... args) const;
+    } payload;
+
+    /**
+     * Call a field getter function on either Nest or Heap in payload.
+     * (This is kind of std::visit but simpler and without exceptions.)
+     *
+     * @tparam NEST Pointer to the Nest getter function.
+     * @tparam HEAP Pointer to the Heap getter function.
+     * @return the result from the getter, or the empty string if isBogus().
+     */
+    template <const char* (Nest::*const NEST)() const,
+              const char* (Heap::*const HEAP)() const>
+    const char* getField() const;
 
     static const Locale &getLocale(int locid);
 
     /**
      * A friend to allow the default locale to be set by either the C or C++ API.
-     * @internal (private)
      */
     friend Locale *locale_set_default_internal(const char *, UErrorCode& status);
 
     /**
-     * @internal (private)
      */
     friend void U_CALLCONV locale_available_init();
 };
@@ -1206,36 +1335,6 @@ Locale::toLanguageTag(UErrorCode& status) const
     StringByteSink<StringClass> sink(&result);
     toLanguageTag(sink, status);
     return result;
-}
-
-U_COMMON_API inline const char*
-Locale::getCountry() const
-{
-    return country;
-}
-
-U_COMMON_API inline const char*
-Locale::getLanguage() const
-{
-    return language;
-}
-
-U_COMMON_API inline const char*
-Locale::getScript() const
-{
-    return script;
-}
-
-U_COMMON_API inline const char*
-Locale::getVariant() const
-{
-    return fIsBogus ? "" : &baseName[variantBegin];
-}
-
-U_COMMON_API inline const char*
-Locale::getName() const
-{
-    return fullName;
 }
 
 template<typename StringClass, typename OutputIterator> inline void
@@ -1296,7 +1395,7 @@ Locale::getUnicodeKeywordValue(StringPiece keywordName, UErrorCode& status) cons
 
 U_COMMON_API inline UBool
 Locale::isBogus() const {
-    return fIsBogus;
+    return payload.isBogus();
 }
 
 U_NAMESPACE_END

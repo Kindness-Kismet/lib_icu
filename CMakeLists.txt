@@ -41,6 +41,7 @@ PRIVATE
     icu_source/common/errorcode.cpp
     icu_source/common/filteredbrk.cpp
     icu_source/common/filterednormalizer2.cpp
+    icu_source/common/fixedstring.cpp
     icu_source/common/icudataver.cpp
     icu_source/common/icuplug.cpp
     icu_source/common/loadednormalizer2impl.cpp
