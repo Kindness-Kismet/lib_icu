@@ -1,7 +1,6 @@
 {
   "strategy": "additive",
   "featureFilters": {
-    "unidata": "include",
     "conversion_mappings": "include",
     "confusables": "include",
     "stringprep": "include"
