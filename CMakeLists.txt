@@ -492,49 +492,12 @@ target_include_directories(icu_regex_minimal
     "${src_loc}/icu_source/i18n"
 )
 
-function(embed_binary_data TARGET_NAME VAR_NAME INPUT_FILE)
- set(OUTPUT_H "${CMAKE_CURRENT_BINARY_DIR}/generated/${VAR_NAME}.h")
- set(OUTPUT_C "${CMAKE_CURRENT_BINARY_DIR}/generated/${VAR_NAME}.c")
-
-
- file(READ "${INPUT_FILE}" file_hex HEX)
-
- string(REGEX MATCHALL "([0-9a-fA-F]{2})" file_bytes "${file_hex}")
- set(c_array_content "")
- foreach(byte ${file_bytes})
-  set(c_array_content "${c_array_content}0x${byte},")
- endforeach()
-
- file(SIZE "${INPUT_FILE}" file_size)
-
- set(header_content "
-#pragma once
-#include <stddef.h>
-#ifdef __cplusplus
-extern \"C\" {
-#endif
-extern const unsigned char ${VAR_NAME}[];
-extern const size_t ${VAR_NAME}_size;
-#ifdef __cplusplus
-}
-#endif
-")
- set(source_content "
-#include \"${VAR_NAME}.h\"
-const unsigned char ${VAR_NAME}[${file_size}] = { ${c_array_content} };
-const size_t ${VAR_NAME}_size = ${file_size};
-")
-
- file(WRITE "${OUTPUT_H}" "${header_content}")
- file(WRITE "${OUTPUT_C}" "${source_content}")
-
- target_sources(${TARGET_NAME} PRIVATE "${OUTPUT_C}")
- target_include_directories(${TARGET_NAME} PRIVATE "${CMAKE_CURRENT_BINARY_DIR}/generated")
-endfunction()
-
-set(MINIMAL_ICU_DAT_FILE "${src_loc}/data/icudt78l.dat")
-embed_binary_data(icu_regex_minimal icudt78_dat "${MINIMAL_ICU_DAT_FILE}")
-
+# 正则只用源码内置的属性数据，链接官方空数据桩提供 ICU 要求的 icudt78_dat 符号。
+nice_target_sources(icu_regex_minimal ${src_loc}
+PRIVATE
+    icu_source/stubdata/stubdata.cpp
+    icu_source/stubdata/stubdata.h
+)
 
 target_compile_definitions(icu_regex_minimal PRIVATE
     U_STATIC_IMPLEMENTATION=1
